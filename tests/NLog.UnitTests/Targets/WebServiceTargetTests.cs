@@ -584,7 +584,7 @@ Morbi Nulla justo Aenean orci Vestibulum ullamcorper tincidunt mollis et hendrer
             Assert.Equal<int>(0, context.CountdownEvent.CurrentCount);
         }
 
-        [Fact]
+        [Fact(Skip = "Only temporary test")]
         public void WebServiceGroupedMessage()
         {
             // TODO: Create a local web service with owin instead. 
