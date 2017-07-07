@@ -584,6 +584,46 @@ Morbi Nulla justo Aenean orci Vestibulum ullamcorper tincidunt mollis et hendrer
             Assert.Equal<int>(0, context.CountdownEvent.CurrentCount);
         }
 
+        [Fact]
+        public void WebServiceGroupedMessage()
+        {
+            // TODO: Create a local web service with owin instead. 
+            /* currently a local service with a post that accepts List<LogMessage> is needed. 
+             * and class LogMessage { public string Message {get;set;}
+             */
+
+            string configString = @"<?xml version='1.0' encoding='utf - 8' ?>
+  <nlog xmlns = 'http://www.nlog-project.org/schemas/NLog.xsd'
+      xmlns:xsi = 'http://www.w3.org/2001/XMLSchema-instance'
+      autoReload = 'true'
+      throwExceptions = 'true'
+      internalLogLevel = 'Off' internalLogFile = 'c:\temp\nlog-internal.log'>
+       <targets>
+        <target name='logMessageWebServiceBuffered' xsi:type='BufferingWrapper' slidingTimeout='true' bufferSize='100' flushTimeout='60000'>
+            <target name = 'web' xsi:type = 'WebService' GroupLogs='true' url = 'http://localhost:5000/api/values?' protocol = 'JsonPost' encoding = 'UTF-8'>
+                <parameter name = 'Message' layout = '${message}' />
+            </target>
+        </target>
+    </targets>
+<rules>
+<logger name = '*' minlevel = 'Debug' writeTo = 'logMessageWebServiceBuffered' ></logger>
+ </rules>
+</nlog>
+";
+
+            var config = CreateConfigurationFromString(configString);
+
+            LogManager.Configuration = config;
+
+            var logger = LogManager.GetCurrentClassLogger();
+
+            logger.Info("Test");
+            logger.Error("test1");
+
+            LogManager.Shutdown();
+        }
+
+
 
         /// <summary>
         /// Start/config route of WS

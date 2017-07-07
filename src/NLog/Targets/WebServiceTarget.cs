@@ -99,6 +99,7 @@ namespace NLog.Targets
             this.Encoding = new UTF8Encoding(writeBOM);
             this.IncludeBOM = writeBOM;
             this.OptimizeBufferReuse = true;
+            this.GroupLogs = false;
 
             this.Headers = new List<MethodCallParameter>();
         }
@@ -198,6 +199,48 @@ namespace NLog.Targets
 #endif
 
         private readonly AsyncOperationCounter pendingManualFlushList = new AsyncOperationCounter();
+
+
+        // Move to other location
+        /// <summary>
+        /// Indicates if logs should be grouped and sent as a list to the service. Default false.
+        /// </summary>
+        public bool GroupLogs { get; set; }
+
+        /// <summary>
+        /// Writes an array of logging events
+        /// </summary>
+        /// <param name="logEvents">Array of logging events</param>
+        protected override void Write(IList<AsyncLogEventInfo> logEvents)
+        {
+            // TODO: This works only for JsonPost currently. Add if to use regular if not JsonPost.
+            if (this.GroupLogs)
+            {
+                List<object> groupedLogList = new List<object>(); 
+
+                foreach (var logEvent in logEvents)
+                {
+                    object[] parameters = new object[this.Parameters.Count];
+
+                    for (int i = 0; i < parameters.Length; i++)
+                    {
+                        var mcp = this.Parameters[i];
+                        var parameterValue = base.RenderLogEvent(mcp.Layout, logEvent.LogEvent);
+                        parameters[i] = Convert.ChangeType(parameterValue, mcp.ParameterType);
+                    }
+
+                    groupedLogList.Add(parameters);
+                }
+
+                this.DoInvoke(groupedLogList.ToArray(), logEvents[0].Continuation);
+            }
+            else
+            {
+                base.Write(logEvents);
+            }
+        }
+
+      
 
         /// <summary>
         /// Calls the target method. Must be implemented in concrete classes.
@@ -562,14 +605,21 @@ namespace NLog.Targets
 
         private class HttpPostJsonFormatter : HttpPostTextFormatterBase
         {
+            readonly ReusableBuilderCreator _reusableStringBuilder = new ReusableBuilderCreator();
+            readonly ReusableBufferCreator _reusableEncodingBuffer = new ReusableBufferCreator(1024);
+            readonly byte[] _encodingPreamble;
+
             private IJsonConverter JsonConverter
             {
                 get { return _jsonConverter ?? (_jsonConverter = ConfigurationItemFactory.Default.JsonConverter); }
             }
             private IJsonConverter _jsonConverter = null;
+            private bool _isGroupedParameters;
 
             public HttpPostJsonFormatter(WebServiceTarget target) : base(target)
             {
+                _isGroupedParameters = target.GroupLogs;
+                _encodingPreamble = target.Encoding.GetPreamble();
             }
 
             protected override string ContentType
@@ -590,6 +640,55 @@ namespace NLog.Targets
             protected override void EndFormattedMessage(StringBuilder builder)
             {
                 builder.Append('}');
+            }
+
+            protected override void WriteContent(MemoryStream ms, object[] parameterValues)
+            {
+                if (_isGroupedParameters)
+                {
+                    // TODO: Need to check so correct parameter datatype, maybe correct number of params as well?
+                    lock (_reusableStringBuilder)
+                    {
+                        using (var targetBuilder = _reusableStringBuilder.Allocate())
+                        {
+                            targetBuilder.Result.Append("[");
+
+                            int count = 0;
+                            foreach (object[] group in parameterValues)
+                            {
+                                count++;
+
+                                BeginFormattedMessage(targetBuilder.Result);
+                                bool first = true;
+                                for (int i = 0; i < Target.Parameters.Count; i++)
+                                {
+                                    if (!first)
+                                        targetBuilder.Result.Append(Separator);
+                                    else
+                                        first = false;
+                                    AppendFormattedParameter(targetBuilder.Result, Target.Parameters[i], group[i]);
+                                }
+                                EndFormattedMessage(targetBuilder.Result);
+
+                                if (count < parameterValues.Length)
+                                    targetBuilder.Result.Append(",");
+                            }
+
+                            targetBuilder.Result.Append("]");
+
+                            using (var transformBuffer = _reusableEncodingBuffer.Allocate())
+                            {
+                                if (_encodingPreamble.Length > 0)
+                                    ms.Write(_encodingPreamble, 0, _encodingPreamble.Length);
+                                targetBuilder.Result.CopyToStream(ms, Target.Encoding, transformBuffer.Result);
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    base.WriteContent(ms, parameterValues);
+                }
             }
 
             protected override void AppendFormattedParameter(StringBuilder builder, MethodCallParameter parameter, object value)
